@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Environment variables / secrets
+.env
+*.pem
+*.key
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+
+# Data (raw/large files shouldn't live in Git)
+data/raw/
+data/bronze/
+*.csv
+*.parquet
+
+# ML artifacts
+*.pkl
+*.joblib
+mlruns/
