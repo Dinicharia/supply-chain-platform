@@ -1,0 +1,33 @@
+# docker-compose.yml
+# Defines the local development infrastructure for the Global Health Supply
+# Chain Risk & Stockout Prediction Platform. Currently just PostgreSQL;
+# more services (Prefect, Superset, etc.) will be added here in later phases.
+
+services:
+  # PostgreSQL: our primary relational database for Bronze/Silver/Gold layers.
+  postgres:
+    image: postgres:16              # Official Postgres image, version 16
+    container_name: supply-chain-db  # Fixed name so we can reference it reliably in scripts
+
+    environment:
+      # Creates a dedicated app user/database on first startup (instead of
+      # using the default 'postgres' superuser for everything).
+      # NOTE: plain-text password is fine for LOCAL DEV ONLY.
+      # Never use this pattern for staging/production credentials.
+      POSTGRES_USER: scip_user
+      POSTGRES_PASSWORD: scip_dev_password
+      POSTGRES_DB: supply_chain
+
+    ports:
+      # Maps container port 5432 to host port 5432, so tools on Windows
+      # (psql, VS Code extensions, etc.) can connect to it directly.
+      - "5432:5432"
+
+    volumes:
+      # Persists database files outside the container's lifecycle, so data
+      # survives 'docker compose down' or container removal.
+      - postgres_data:/var/lib/postgresql/data
+
+# Named volume declaration (Docker manages the actual storage location).
+volumes:
+  postgres_data:
