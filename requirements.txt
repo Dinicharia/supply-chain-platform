@@ -1,0 +1,7 @@
+# requirements.txt
+# Core dependencies for the Global Health Supply Chain Platform.
+# Install with: pip install -r requirements.txt
+
+pandas          # data manipulation, and reads .dta (Stata) files directly
+geopandas       # geographic data handling, reads .shp shapefiles
+psycopg2-binary # PostgreSQL driver for Python (lets us connect to our Postgres container)
