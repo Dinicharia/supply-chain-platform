@@ -21,7 +21,7 @@ services:
     ports:
       # Maps container port 5432 to host port 5432, so tools on Windows
       # (psql, VS Code extensions, etc.) can connect to it directly.
-      - "5432:5432"
+      - "5433:5432"
 
     volumes:
       # Persists database files outside the container's lifecycle, so data
