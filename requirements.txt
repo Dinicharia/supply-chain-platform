@@ -5,3 +5,4 @@
 pandas          # data manipulation, and reads .dta (Stata) files directly
 geopandas       # geographic data handling, reads .shp shapefiles
 psycopg2-binary # PostgreSQL driver for Python (lets us connect to our Postgres container)
+prefect         # workflow orchestration: defines, runs, and monitors our pipeline
