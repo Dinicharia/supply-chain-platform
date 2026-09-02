@@ -1,18 +1,11 @@
-# load_facility_commodity_readiness.py
+# ~/supply-chain-platform/scripts/etl/load_facility_commodity_readiness.py
 #
 # Loads REAL facility_commodity_readiness data from the Kenya 2010 DHS
 # SPA Facility Recode - Family Planning block (lv303_ series).
+# See header comments in original version (Phase 4) for full DHS
+# column mapping rationale.
 #
-# Only DHS columns that map UNAMBIGUOUSLY to one of our 16 curated
-# commodities (from Phase 3) are loaded. DHS columns with no match in
-# our curated list, or that are ambiguous (e.g. "Implant" doesn't
-# distinguish rod type), are deliberately skipped - consistent with
-# the scope decision documented in Phase 3.
-#
-# DHS availability coding (confirmed identical across lv303a/b/d/e/g/i/j/k/l):
-#   0 = No, never available            -> "Not Stocked"
-#   1-4 = Various observed/valid states -> "Available"
-#   5 = Reported only (not observed)    -> "Reported Only"
+# REFACTORED for Prefect orchestration (Phase 5).
 
 import pandas as pd
 import psycopg2
@@ -27,14 +20,11 @@ DB_CONFIG = {
     "password": "scip_dev_password",
 }
 
-# Maps DHS column name -> our commodity_name (must match commodities.commodity_name
-# exactly, as seeded in sql/seed/01_seed_commodities.sql). Only unambiguous
-# matches are included - see header comment for what was excluded and why.
 DHS_COLUMN_TO_COMMODITY = {
     "lv303e": "DMPA-IM Injectable Contraceptive",
 }
 
-# Converts DHS's 6-level availability code into our simplified stocked_status.
+
 def decode_availability(code):
     if pd.isna(code):
         return None
@@ -46,82 +36,79 @@ def decode_availability(code):
     elif code == 5:
         return "Reported Only"
     else:
-        return None  # unexpected code - treated as missing rather than guessed
+        return None
 
-# ------------------------------------------------------------------
-# STEP 1: Read the Facility Recode, keeping facility_num plus the
-# raw (non-labeled) codes for our mapped columns. We deliberately use
-# convert_categoricals=False here since we're decoding the numeric
-# codes ourselves with decode_availability(), not relying on Stata's labels.
-# ------------------------------------------------------------------
-columns_needed = ["v004"] + list(DHS_COLUMN_TO_COMMODITY.keys())
-df = pd.read_stata(FACILITY_RECODE_PATH, convert_categoricals=False, columns=columns_needed)
-df = df.rename(columns={"v004": "facility_num"})
-df["facility_num"] = df["facility_num"].astype(int)
 
-print(f"Loaded {len(df)} facility rows for readiness mapping")
+def run_readiness_load_family_planning():
+    """
+    Loads real facility_commodity_readiness data for DMPA-IM from the
+    DHS Family Planning block. Clears only rows for this commodity
+    before reloading (not the whole table), so it can run alongside
+    the malaria/general readiness scripts without wiping their data.
+    """
+    columns_needed = ["v004"] + list(DHS_COLUMN_TO_COMMODITY.keys())
+    df = pd.read_stata(FACILITY_RECODE_PATH, convert_categoricals=False, columns=columns_needed)
+    df = df.rename(columns={"v004": "facility_num"})
+    df["facility_num"] = df["facility_num"].astype(int)
 
-# ------------------------------------------------------------------
-# STEP 2: Connect to Postgres, build lookup tables we need for foreign keys.
-# ------------------------------------------------------------------
-conn = psycopg2.connect(**DB_CONFIG)
-cur = conn.cursor()
+    print(f"Loaded {len(df)} facility rows for readiness mapping")
 
-# facility_name follows the "Facility {facility_num}" pattern set in
-# load_facilities.py, so we can look up facility_id by that same string.
-cur.execute("SELECT facility_id, facility_name FROM facilities;")
-facility_id_lookup = {name: fid for fid, name in cur.fetchall()}
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur = conn.cursor()
 
-cur.execute("SELECT commodity_id, commodity_name FROM commodities;")
-commodity_id_lookup = {name: cid for cid, name in cur.fetchall()}
+    cur.execute("SELECT facility_id, facility_name FROM facilities;")
+    facility_id_lookup = {name: fid for fid, name in cur.fetchall()}
 
-# Clear any prior readiness data before reloading (clean replacement,
-# consistent with how we handled facilities/regions).
-cur.execute("DELETE FROM facility_commodity_readiness;")
-print("Cleared existing facility_commodity_readiness data.")
+    cur.execute("SELECT commodity_id, commodity_name FROM commodities;")
+    commodity_id_lookup = {name: cid for cid, name in cur.fetchall()}
 
-# ------------------------------------------------------------------
-# STEP 3: Insert one row per (facility, mapped commodity) where DHS
-# recorded a usable value.
-# ------------------------------------------------------------------
-insert_count = 0
-skipped_no_facility = 0
-skipped_no_value = 0
+    # TRUNCATE requires a whole-table operation, but we only want to
+    # clear THIS script's commodities (not malaria/general's rows too),
+    # so we use a targeted DELETE here instead - table is small (a few
+    # thousand rows), so DELETE's overhead is negligible at this scale.
+    # (Contrast with inventory_daily, where TRUNCATE was necessary due
+    # to its much larger size.)
+    commodity_ids = tuple(commodity_id_lookup[name] for name in DHS_COLUMN_TO_COMMODITY.values())
+    cur.execute("DELETE FROM facility_commodity_readiness WHERE commodity_id IN %s;", (commodity_ids,))
 
-for _, row in df.iterrows():
-    # iterrows() can silently upcast facility_num to float if other
-    # columns in the row contain NaN (e.g. lv303e has missing values).
-    # Explicitly cast back to int to match the "Facility {int}" format
-    # used when facilities were originally inserted.
-    facility_name = f"Facility {int(row['facility_num'])}"
-    facility_id = facility_id_lookup.get(facility_name)
+    insert_count = 0
+    skipped_no_facility = 0
+    skipped_no_value = 0
 
-    if facility_id is None:
-        skipped_no_facility += 1
-        continue
+    for _, row in df.iterrows():
+        facility_name = f"Facility {int(row['facility_num'])}"
+        facility_id = facility_id_lookup.get(facility_name)
 
-    for dhs_col, commodity_name in DHS_COLUMN_TO_COMMODITY.items():
-        stocked_status = decode_availability(row[dhs_col])
-        if stocked_status is None:
-            skipped_no_value += 1
+        if facility_id is None:
+            skipped_no_facility += 1
             continue
 
-        commodity_id = commodity_id_lookup[commodity_name]
-        cur.execute(
-            """
-            INSERT INTO facility_commodity_readiness
-                (facility_id, commodity_id, stocked_status, survey_year)
-            VALUES (%s, %s, %s, %s);
-            """,
-            (facility_id, commodity_id, stocked_status, 2010)
-        )
-        insert_count += 1
+        for dhs_col, commodity_name in DHS_COLUMN_TO_COMMODITY.items():
+            stocked_status = decode_availability(row[dhs_col])
+            if stocked_status is None:
+                skipped_no_value += 1
+                continue
 
-conn.commit()
+            commodity_id = commodity_id_lookup[commodity_name]
+            cur.execute(
+                """
+                INSERT INTO facility_commodity_readiness
+                    (facility_id, commodity_id, stocked_status, survey_year)
+                VALUES (%s, %s, %s, %s);
+                """,
+                (facility_id, commodity_id, stocked_status, 2010)
+            )
+            insert_count += 1
 
-print(f"Inserted {insert_count} facility_commodity_readiness rows.")
-print(f"Skipped {skipped_no_facility} rows (facility not found).")
-print(f"Skipped {skipped_no_value} rows (no usable DHS value).")
+    conn.commit()
 
-cur.close()
-conn.close()
+    print(f"Inserted {insert_count} facility_commodity_readiness rows.")
+    print(f"Skipped {skipped_no_facility} rows (facility not found).")
+    print(f"Skipped {skipped_no_value} rows (no usable DHS value).")
+
+    cur.close()
+    conn.close()
+
+
+if __name__ == "__main__":
+    run_readiness_load_family_planning()
