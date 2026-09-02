@@ -10,6 +10,12 @@
 # commodities. This table becomes the backbone for the synthetic
 # inventory_daily simulation: we only simulate day-to-day stock
 # movement for (facility, commodity) pairs that appear here.
+#
+# REFACTORED for Prefect orchestration (Phase 5): the logic that used
+# to run at import time now lives inside run_assignment_generation(),
+# so pipeline/flow.py can import and call it as a Prefect task. Running
+# this file directly (python generate_facility_commodity_assignment.py)
+# still works exactly as before, via the __main__ block at the bottom.
 
 import psycopg2
 
@@ -30,50 +36,65 @@ TIER_SERVICE_AREAS = {
     "County/Referral Hospital": {"General", "Family Planning", "Malaria", "TB", "HIV/ART"},
 }
 
-conn = psycopg2.connect(**DB_CONFIG)
-cur = conn.cursor()
 
-# Pull every real facility's tier, and every commodity's service_area.
-cur.execute("SELECT facility_id, facility_tier FROM facilities;")
-facilities = cur.fetchall()  # list of (facility_id, facility_tier)
+def run_assignment_generation():
+    """
+    Generates facility_commodity_stock_assignment from scratch, based
+    on each facility's tier and each commodity's service_area. Clears
+    any existing assignment data first (deterministic computation, so
+    clean replacement is safe and correct).
+    """
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur = conn.cursor()
 
-cur.execute("SELECT commodity_id, service_area FROM commodities;")
-commodities = cur.fetchall()  # list of (commodity_id, service_area)
+    # Pull every real facility's tier, and every commodity's service_area.
+    cur.execute("SELECT facility_id, facility_tier FROM facilities;")
+    facilities = cur.fetchall()  # list of (facility_id, facility_tier)
 
-print(f"Facilities: {len(facilities)}")
-print(f"Commodities: {len(commodities)}")
+    cur.execute("SELECT commodity_id, service_area FROM commodities;")
+    commodities = cur.fetchall()  # list of (commodity_id, service_area)
 
-# Clear any existing assignment data before regenerating (this is a
-# deterministic computation, so clean replacement is safe and correct).
-cur.execute("DELETE FROM facility_commodity_stock_assignment;")
+    print(f"Facilities: {len(facilities)}")
+    print(f"Commodities: {len(commodities)}")
 
-# Build the assignment: for each facility, check each commodity's
-# service_area against that facility's tier's eligible service areas.
-insert_count = 0
-for facility_id, facility_tier in facilities:
-    eligible_areas = TIER_SERVICE_AREAS.get(facility_tier)
+    # Clear any existing assignment data before regenerating.
+    cur.execute("DELETE FROM facility_commodity_stock_assignment;")
 
-    if eligible_areas is None:
-        # Defensive check: every facility_tier value should be a known
-        # key in TIER_SERVICE_AREAS. If this ever prints, something
-        # upstream (e.g. the tier mapping in load_facilities.py) has
-        # drifted out of sync with this script's assumptions.
-        print(f"WARNING: unknown facility_tier '{facility_tier}' for facility_id {facility_id}")
-        continue
+    # Build the assignment: for each facility, check each commodity's
+    # service_area against that facility's tier's eligible service areas.
+    insert_count = 0
+    for facility_id, facility_tier in facilities:
+        eligible_areas = TIER_SERVICE_AREAS.get(facility_tier)
 
-    for commodity_id, service_area in commodities:
-        if service_area in eligible_areas:
-            cur.execute(
-                """
-                INSERT INTO facility_commodity_stock_assignment (facility_id, commodity_id)
-                VALUES (%s, %s);
-                """,
-                (facility_id, commodity_id)
-            )
-            insert_count += 1
+        if eligible_areas is None:
+            # Defensive check: every facility_tier value should be a
+            # known key in TIER_SERVICE_AREAS. If this ever prints,
+            # something upstream (e.g. the tier mapping in
+            # load_facilities.py) has drifted out of sync with this
+            # script's assumptions.
+            print(f"WARNING: unknown facility_tier '{facility_tier}' for facility_id {facility_id}")
+            continue
 
-conn.commit()
-print(f"Inserted {insert_count} facility-commodity assignment rows.")
+        for commodity_id, service_area in commodities:
+            if service_area in eligible_areas:
+                cur.execute(
+                    """
+                    INSERT INTO facility_commodity_stock_assignment (facility_id, commodity_id)
+                    VALUES (%s, %s);
+                    """,
+                    (facility_id, commodity_id)
+                )
+                insert_count += 1
 
-cur.close()
-conn.close()
+    conn.commit()
+    print(f"Inserted {insert_count} facility-commodity assignment rows.")
+
+    cur.close()
+    conn.close()
+
+
+# Allows this script to still be run directly (python generate_facility_
+# commodity_assignment.py), exactly as before - unchanged behavior for
+# manual/standalone use, in addition to being importable by Prefect.
+if __name__ == "__main__":
+    run_assignment_generation()
