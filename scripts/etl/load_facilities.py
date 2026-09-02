@@ -86,9 +86,13 @@ def run_facility_load():
     conn = psycopg2.connect(**DB_CONFIG)
     cur = conn.cursor()
 
-    cur.execute("DELETE FROM facilities;")
-    cur.execute("DELETE FROM regions;")
-    print("Deleted placeholder facilities and regions.")
+       # TRUNCATE ... CASCADE instead of DELETE: performance (DELETE on
+    # large downstream tables like inventory_daily is extremely slow -
+    # see Phase 5 notes) and CASCADE automatically empties any table
+    # with a foreign key pointing to facilities/regions, so we don't
+    # need to manually clear every downstream table in the right order.
+    cur.execute("TRUNCATE TABLE facilities, regions CASCADE;")
+    print("Cleared facilities and regions (and all dependent tables via CASCADE).")
 
     region_names = sorted(merged_df["region_name"].unique())
     region_id_lookup = {}
