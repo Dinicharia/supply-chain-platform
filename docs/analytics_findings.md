@@ -35,6 +35,11 @@ Essential commodities (14 of 16) show stockout rates of 8-16%, while the two Rou
 
 This finding is a property of our synthetic simulation's current parameters, not a real-world empirical claim about Kenya's health supply chain - documented here for transparency, consistent with the project's synthetic-data disclosure principles (see README).
 
+## Finding 5: Malaria seasonality is clearly visible and consistent across all 5 simulated years
+
+Monthly stockout rates for Malaria-service-area commodities show a clean, repeating annual pattern: sharp peaks during Kenya's long rains (March-May, ~19-21% stockout) and a secondary peak during the short rains (October-December, ~13-15%), with troughs in the dry months (~7-9%). This pattern repeats consistently across all 5 simulated years (2021-2025), confirming the `seasonal_multiplier()` mechanism in the simulation is producing a stable, detectable effect rather than noise.
+
+This is a useful, realistic feature for future ML models (Phase 7/8) to learn - a model that ignores seasonality would systematically underestimate malaria commodity stockout risk during rainy seasons.
 ---
 
 *Last updated: Phase 6 (Analytics)*
